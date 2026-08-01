@@ -1,5 +1,8 @@
 import os
 import asyncio
+from dotenv import load_dotenv
+load_dotenv()
+from textual.app import App, ComposeResult
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll, Container, Horizontal
 from textual.widgets import Header, Footer, Input, Markdown, Static, Select
@@ -47,8 +50,8 @@ class AITerminalApp(App):
     ]
 
     AVAILABLE_MODELS = [
-        ("Poolside Laguna M.1 (Coding Agent)", "poolside/laguna-m.1:free"),
         ("Cohere North Mini Code (256K Context)", "cohere/north-mini-code:free"),
+        ("NVIDIA Nemotron 3 Super (Free)", "nvidia/nemotron-3-super-120b-a12b:free"),
         ("NVIDIA Nemotron 3 Ultra (1M Context)", "nvidia/nemotron-3-ultra-550b-a55b:free"),
         ("Google Gemma 4 31B (Vision & Text)", "google/gemma-4-31b-it:free"),
         ("OpenRouter Auto-Free Router", "openrouter/free")
