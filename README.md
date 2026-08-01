@@ -6,7 +6,8 @@ A sleek, asynchronous, and deeply integrated terminal-based AI assistant. Built 
 
 ##  See it in Action
 
-<video src="/home/devesh/ai-terminal-app/AI-Terminal.mp4" width="100%" controls autoplay loop muted></video>
+<video src="AI-Terminal.mp4" width="100%" controls autoplay loop muted></video>
+
 
 
 ---
