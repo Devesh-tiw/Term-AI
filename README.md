@@ -26,8 +26,6 @@ Whether you're debugging code, brainstorming ideas, or just want a fast AI chat 
 
 https://github.com/user-attachments/assets/eccc7859-d406-4802-87aa-9bb977e6d369
 
- **[Drop AI-Terminal.mp4 here — see instructions in the comment above]**
-
 </div>
 
 
