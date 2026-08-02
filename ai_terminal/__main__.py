@@ -22,6 +22,10 @@ from langchain_openrouter import ChatOpenRouter
 from langchain_core.messages import SystemMessage, HumanMessage
 
 class AITerminalApp(App):
+    BINDINGS = [
+        ("ctrl+l", "clear", "Clear Screen"),
+        ("ctrl+c", "quit", "Quit"),
+    ]
     CSS = """
     Screen {
         background: $surface;
@@ -158,6 +162,8 @@ class AITerminalApp(App):
             status_label.update("❌ Error occurred.")
 
     def action_clear(self) -> None:
+        """Clears the chat history and the screen."""
+        self.chat_history = []
         # Wipe the memory when screen is cleared
         self.chat_history = [
             SystemMessage(content="You are a CLI terminal assistant. Keep all responses concise, direct, and focused.")
