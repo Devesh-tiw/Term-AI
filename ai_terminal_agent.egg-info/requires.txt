@@ -1,0 +1,5 @@
+textual>=0.70.0
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-openrouter>=0.1.0
+python-dotenv>=1.0.0

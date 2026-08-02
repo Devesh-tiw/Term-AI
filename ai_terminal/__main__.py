@@ -1,7 +1,17 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-load_dotenv()
+
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+root_dir = os.path.dirname(current_dir)
+
+env_path = os.path.join(root_dir, ".env")
+load_dotenv(env_path)
+
+from textual.app import App, ComposeResult
+# ... (the rest of your code stays the same)
 from textual.app import App, ComposeResult
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll, Container, Horizontal
@@ -158,6 +168,9 @@ class AITerminalApp(App):
         status_label = self.query_one("#status-label", Static)
         status_label.update("Ready.")
 
-if __name__ == "__main__":
+def main():
     app = AITerminalApp()
     app.run()
+
+if __name__ == "__main__":
+    main()

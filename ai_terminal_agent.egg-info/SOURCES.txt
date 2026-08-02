@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+ai_terminal/__init__.py
+ai_terminal/__main__.py
+ai_terminal_agent.egg-info/PKG-INFO
+ai_terminal_agent.egg-info/SOURCES.txt
+ai_terminal_agent.egg-info/dependency_links.txt
+ai_terminal_agent.egg-info/entry_points.txt
+ai_terminal_agent.egg-info/requires.txt
+ai_terminal_agent.egg-info/top_level.txt
