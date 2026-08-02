@@ -1,4 +1,4 @@
-#  ai-terminal-app
+#  AI-terminal-app
 
 > A sleek, asynchronous, terminal-native AI assistant — engineered as a proper installable CLI tool, not just a script. Built with **Textual**, orchestrated by **LangChain**, and routed through **OpenRouter**.
 
@@ -24,15 +24,11 @@ This isn't a one-off script wrapped in a shell file — it's a `pip`-installable
 
 <div align="center">
 
-<!--
-  📌 Drag and drop your demo video or GIF (e.g. AI-Terminal-Fixed.mp4) directly
-  onto this spot using the GitHub web editor. Do this from the "Edit" pane on
-  github.com — GitHub will upload it to its asset CDN and auto-insert a
-  playable embed link. Make sure the video is H.264-encoded so it renders
-  correctly inline (older codecs like MPEG-4 ASP will show a blank frame).
--->
 
-📌 **[Drop your demo video/GIF here — see comment above for instructions]**
+
+https://github.com/user-attachments/assets/963743da-e99f-45b9-a973-7f7fde73c385
+
+
 
 </div>
 
