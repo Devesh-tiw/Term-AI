@@ -1,26 +1,26 @@
-
 import os
 import asyncio
 import base64
 import tempfile
 import threading
+import webbrowser
 from pathlib import Path
-
 from dotenv import load_dotenv
-
-# ── env loading ──────────────────────────────────────────────────────────────
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir    = os.path.dirname(current_dir)
 load_dotenv(os.path.join(root_dir, ".env"))
 
 from textual.app        import App, ComposeResult
 from textual.containers import VerticalScroll, Container, Horizontal, Vertical
+from textual.screen     import Screen
 from textual.widgets    import (
     Header, Footer, Input, Markdown, Static, Select,
-    TextArea, Switch,
+    TextArea, Switch, Button,
 )
 from textual            import work
 from textual.reactive   import reactive
+
+OPENROUTER_KEYS_URL = "https://openrouter.ai/keys"
 
 from langchain_openrouter    import ChatOpenRouter
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -59,11 +59,6 @@ except ImportError:
         DYNAMIC_MODELS = True
     except ImportError:
         DYNAMIC_MODELS = False
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  VOICE ENGINE
-# ═══════════════════════════════════════════════════════════════════════════════
 
 class VoiceEngine:
     """
@@ -279,6 +274,156 @@ FALLBACK_MODELS = [
 ]
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FIRST-RUN SETUP — API KEY WIZARD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ApiKeyScreen(Screen):
+    """
+    Shown automatically on first launch when OPENROUTER_API_KEY is missing.
+
+    Step 1 — how/where to get a free OpenRouter API key.
+    Step 2 — paste the key; it's validated, written to .env, and loaded
+             into the current process so the app works immediately
+             without needing a restart.
+    """
+
+    CSS = """
+    ApiKeyScreen {
+        align: center middle;
+        background: $surface;
+    }
+    #setup-card {
+        width: 72;
+        height: auto;
+        border: thick $accent;
+        padding: 2 3;
+        background: $panel;
+    }
+    #setup-title {
+        text-style: bold;
+        color: $accent;
+        padding-bottom: 1;
+    }
+    #step-indicator, #step-indicator-2 {
+        color: $text-muted;
+        padding-bottom: 1;
+    }
+    #step1-body, #step2-body {
+        padding-bottom: 1;
+    }
+    #key-input {
+        margin-bottom: 1;
+    }
+    #setup-error {
+        color: $error;
+        padding-bottom: 1;
+    }
+    #step1-buttons, #step2-buttons {
+        height: 3;
+        align-horizontal: right;
+    }
+    #step1-buttons Button, #step2-buttons Button {
+        margin-left: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="setup-card"):
+            yield Static("🔑  Welcome to ai-agent — one-time setup", id="setup-title")
+
+            # ── Step 1: guidance ────────────────────────────────────────
+            with Vertical(id="step-1"):
+                yield Static("Step 1 of 2 — Get your OpenRouter API key", id="step-indicator")
+                yield Static(
+                    "ai-agent routes every prompt through OpenRouter, which needs "
+                    "a free API key.\n\n"
+                    "1. Create a free account at openrouter.ai\n"
+                    "2. Open the Keys page and click 'Create Key'\n"
+                    "3. Copy the key (starts with sk-or-...)\n\n"
+                    f"{OPENROUTER_KEYS_URL}",
+                    id="step1-body",
+                )
+                with Horizontal(id="step1-buttons"):
+                    yield Button("Open openrouter.ai/keys", id="open-browser-btn")
+                    yield Button("Next →", id="next-btn", variant="primary")
+
+            # ── Step 2: enter + save the key (hidden until Next) ────────
+            with Vertical(id="step-2"):
+                yield Static("Step 2 of 2 — Enter your API key", id="step-indicator-2")
+                yield Static("Paste the key you copied from OpenRouter below.", id="step2-body")
+                yield Input(placeholder="sk-or-...", password=True, id="key-input")
+                yield Static("", id="setup-error")
+                with Horizontal(id="step2-buttons"):
+                    yield Button("← Back", id="back-btn")
+                    yield Button("Save & continue", id="save-key-btn", variant="success")
+
+    def on_mount(self) -> None:
+        self.query_one("#step-2").display = False
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "open-browser-btn":
+            try:
+                webbrowser.open(OPENROUTER_KEYS_URL)
+            except Exception:
+                pass  # Best-effort — user can still copy the URL shown on screen
+        elif bid == "next-btn":
+            self.query_one("#step-1").display = False
+            self.query_one("#step-2").display = True
+            self.query_one("#key-input", Input).focus()
+        elif bid == "back-btn":
+            self.query_one("#step-2").display = False
+            self.query_one("#step-1").display = True
+        elif bid == "save-key-btn":
+            self._save_key()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "key-input":
+            self._save_key()
+
+    def _save_key(self) -> None:
+        error = self.query_one("#setup-error", Static)
+        key = self.query_one("#key-input", Input).value.strip()
+
+        if not key:
+            error.update("❌ Please paste a key first.")
+            return
+        if not key.startswith("sk-or-"):
+            error.update(
+                "⚠️  That doesn't look like a typical OpenRouter key "
+                "(usually starts with sk-or-) — saving it anyway."
+            )
+
+        try:
+            self._write_env_key(key)
+        except Exception as e:
+            error.update(f"❌ Could not save to .env: {e}")
+            return
+
+        os.environ["OPENROUTER_API_KEY"] = key
+        self.app.pop_screen()
+
+    @staticmethod
+    def _write_env_key(key: str) -> None:
+        """Write/replace OPENROUTER_API_KEY in the project's .env file."""
+        env_path = Path(root_dir) / ".env"
+        lines: list[str] = []
+        found = False
+
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if line.strip().startswith("OPENROUTER_API_KEY="):
+                    lines.append(f"OPENROUTER_API_KEY={key}")
+                    found = True
+                else:
+                    lines.append(line)
+
+        if not found:
+            lines.append(f"OPENROUTER_API_KEY={key}")
+
+        env_path.write_text("\n".join(lines) + "\n")
+
 
 class AITerminalApp(App):
 
@@ -286,6 +431,7 @@ class AITerminalApp(App):
         ("ctrl+c",  "quit",         "Quit"),
         ("ctrl+l",  "clear",        "Clear Memory"),
         ("ctrl+p",  "toggle_panel", "Input Panel"),
+        ("ctrl+y",  "copy_output",  "📋 Copy Reply"),
         ("f5",      "record_voice", "🎙 Record (STT)"),
         ("f6",      "toggle_tts",   "🔊 TTS on/off"),
         ("f7",      "toggle_agent", "🤖 Agent Mode"),
@@ -393,13 +539,11 @@ class AITerminalApp(App):
         ("💻  Code snippet",            "code"),
     ]
 
-    # ── Reactive state ────────────────────────────────────────────────────
     agent_mode: reactive[bool] = reactive(False)
     panel_open: reactive[bool] = reactive(False)
     is_recording: reactive[bool] = reactive(False)
     tts_on: reactive[bool] = reactive(False)
 
-    # ── Init ──────────────────────────────────────────────────────────────
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.chat_history: list = [
@@ -411,14 +555,7 @@ class AITerminalApp(App):
         ]
         self.agent        = LocalAgent()
         self.voice        = VoiceEngine()
-        # FIX: Do NOT call get_available_models() here — it blocks.
-        #      Models are loaded async in on_mount via @work.
         self._models: list = FALLBACK_MODELS
-        # FIX: visible transcript — every markdown.update() was previously
-        # REPLACING the whole panel with only the latest turn, wiping prior
-        # Q&A off screen even though self.chat_history (sent to the model)
-        # was fine. Now we accumulate turns here and always render the
-        # full list, so the conversation actually stays visible.
         self.visible_transcript: list[str] = []
 
     # ── Layout ────────────────────────────────────────────────────────────
@@ -477,11 +614,11 @@ class AITerminalApp(App):
                 id="panel-hint",
             )
 
-        # Bottom: model select + agent toggle + status + prompt
+        
         yield Container(
             Horizontal(
                 Select(
-                    FALLBACK_MODELS,     # placeholder; replaced after models load
+                    FALLBACK_MODELS,     
                     prompt="⏳ Loading models…",
                     id="model-selector",
                 ),
@@ -499,13 +636,13 @@ class AITerminalApp(App):
 
         yield Footer()
 
-    # ── Mount: load models async so UI opens instantly ────────────────────
     def on_mount(self) -> None:
         self.query_one("#input-panel").display = False
         self.load_models_async()
-        # FIX: preload Whisper in the background at startup so the first
-        # F5 press doesn't stall on a silent model download.
         self.preload_voice_model()
+
+        if not os.environ.get("OPENROUTER_API_KEY"):
+            self.push_screen(ApiKeyScreen())
 
     @work(thread=True)
     def preload_voice_model(self) -> None:
@@ -514,7 +651,7 @@ class AITerminalApp(App):
         try:
             self.voice.preload_whisper()
         except Exception:
-            pass   # Non-fatal — falls back to lazy-load on first use
+            pass  
 
     @work
     async def load_models_async(self) -> None:
@@ -526,7 +663,6 @@ class AITerminalApp(App):
             try:
                 models = await aget_available_models()
                 self._models = models
-                # Rebuild the Select widget with real model list
                 selector.set_options(models)
                 if models:
                     selector.value = models[0][1]
@@ -540,7 +676,6 @@ class AITerminalApp(App):
             selector.set_options(FALLBACK_MODELS)
             selector.value = FALLBACK_MODELS[0][1]
 
-        # Update welcome text now that models are loaded
         self.query_one("#ai-response", Markdown).update(
             "### 🤖 AI Terminal  v2.1  — Ready\n\n"
             "| Key | Action |\n"
@@ -555,14 +690,11 @@ class AITerminalApp(App):
             "| `/write <path> <text>` | Write to file |\n"
             "| `/fetch <url>` | Fetch web page |"
         )
-
-    # ── Panel toggle ──────────────────────────────────────────────────────
     def action_toggle_panel(self) -> None:
         panel = self.query_one("#input-panel")
         self.panel_open = not self.panel_open
         panel.display = self.panel_open
 
-    # ── Agent toggle (F7 — was Ctrl+A, fixed terminal conflict) ──────────
     def action_toggle_agent(self) -> None:
         toggle = self.query_one("#agent-toggle", Switch)
         toggle.value = not toggle.value
@@ -577,7 +709,6 @@ class AITerminalApp(App):
         else:
             status.update("Ready.")
 
-    # ── Voice: F5 = toggle record ─────────────────────────────────────────
     def action_record_voice(self) -> None:
         if not AUDIO_AVAILABLE:
             self.query_one("#status-label", Static).update(
@@ -590,8 +721,6 @@ class AITerminalApp(App):
             self._stop_voice_recording()
 
     def _start_voice_recording(self) -> None:
-        # FIX: tell the user up front if the model is still warming up,
-        # instead of letting them record and then silently stall.
         if WHISPER_AVAILABLE and not self.voice.model_ready:
             self.query_one("#status-label", Static).update(
                 "⏳ Voice model still loading (first run only) — try again in a few seconds…"
@@ -619,13 +748,8 @@ class AITerminalApp(App):
         status = self.query_one("#status-label", Static)
         prompt_input = self.query_one("#prompt-input", Input)
         try:
-            # FIX: hard timeout so a stuck transcription gives a clear error
-            # instead of leaving "Transcribing…" on screen forever.
             text = await asyncio.wait_for(self.voice.transcribe(audio), timeout=25)
             if text:
-                # FIX: send straight to the model — no need to press Enter.
-                # We still briefly show the transcript in the input box so
-                # the user can see what was heard, then clear it and submit.
                 prompt_input.value = text
                 status.update(f"🎙 Heard: \"{text}\" — sending…")
                 prompt_input.value = ""
@@ -637,7 +761,6 @@ class AITerminalApp(App):
         except Exception as e:
             status.update(f"❌ Transcription error: {e}")
 
-    # ── Voice: F6 = toggle TTS ────────────────────────────────────────────
     def action_toggle_tts(self) -> None:
         if not TTS_AVAILABLE:
             self.query_one("#status-label", Static).update(
@@ -658,7 +781,6 @@ class AITerminalApp(App):
             f"{rec_icon}  {tts_icon}  {agt_icon}"
         )
 
-    # ── Transcript rendering (FIX for "memory not visible") ───────────────
     def _render_transcript(self) -> None:
         """Render the full accumulated conversation, not just the latest turn."""
         markdown = self.query_one("#ai-response", Markdown)
@@ -675,7 +797,6 @@ class AITerminalApp(App):
         self.visible_transcript.append(block)
         self._render_transcript()
 
-    # ── Submit ────────────────────────────────────────────────────────────
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         user_prompt = event.value.strip()
         if not user_prompt:
@@ -683,9 +804,6 @@ class AITerminalApp(App):
         self.query_one("#prompt-input", Input).value = ""
         await self._submit_prompt(user_prompt)
 
-    # FIX: shared submission path — used by Enter key AND by voice STT so
-    # a transcribed prompt can be sent straight to the model without the
-    # user needing to press Enter afterward.
     async def _submit_prompt(self, user_prompt: str) -> None:
         model_selector = self.query_one("#model-selector", Select)
         selected_model = model_selector.value
@@ -745,7 +863,6 @@ class AITerminalApp(App):
 
         return f"{user_prompt}\n\n---\n{panel_text}"
 
-    # ── Agent slash commands ──────────────────────────────────────────────
     @work(exclusive=False)
     async def run_agent_command(self, command: str) -> None:
         markdown = self.query_one("#ai-response", Markdown)
@@ -805,7 +922,6 @@ class AITerminalApp(App):
             self.chat_history.append(response)
 
             reply_text = response.content
-            # Replace the "Thinking…" placeholder turn with the real answer
             self.visible_transcript[-1] = f"### 💬 You:\n{display_prompt}\n\n{reply_text}"
             self._render_transcript()
             status.update("✅ Done.")
@@ -827,6 +943,25 @@ class AITerminalApp(App):
     async def speak_response(self, text: str) -> None:
         await self.voice.speak(text)
 
+    def action_copy_output(self) -> None:
+        status = self.query_one("#status-label", Static)
+        if not self.visible_transcript:
+            status.update("⚠️  Nothing to copy yet.")
+            return
+
+        last_turn = self.visible_transcript[-1]
+        # Each turn is stored as "### 💬 You:\n{prompt}\n\n{reply}" — strip
+        # the echoed prompt header so only the AI's actual reply is copied.
+        if "\n\n" in last_turn:
+            _, _, reply = last_turn.partition("\n\n")
+        else:
+            reply = last_turn
+
+        # Textual's built-in clipboard copy uses the OSC 52 terminal escape
+        # sequence — works locally and over SSH, no extra dependency needed.
+        self.copy_to_clipboard(reply.strip())
+        status.update("📋 Copied last reply to clipboard.")
+
     # ── Clear ─────────────────────────────────────────────────────────────
     def action_clear(self) -> None:
         self.chat_history = [
@@ -835,8 +970,6 @@ class AITerminalApp(App):
                 "Keep responses concise and precise."
             ))
         ]
-        # FIX: also clear the visible transcript list, not just the LLM's
-        # own memory — otherwise the next turn would append onto stale UI.
         self.visible_transcript = []
         self.query_one("#ai-response", Markdown).update(
             "### 🧹 Memory cleared. Ready."
