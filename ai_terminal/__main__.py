@@ -826,8 +826,6 @@ class AITerminalApp(App):
                 "Keep responses concise and precise."
             ))
         ]
-        # FIX: also clear the visible transcript list, not just the LLM's
-        # own memory — otherwise the next turn would append onto stale UI.
         self.visible_transcript = []
         self.query_one("#ai-response", Markdown).update(
             "### 🧹 Memory cleared. Ready."
