@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-terminal-agent"
-version = "2.0.0"
-description = "A multi-model AI terminal assistant with rich input panel and local agent tools"
+version = "2.1.0"
+description = "A multi-model AI terminal assistant with voice, rich input panel, and local agent tools"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -22,21 +22,20 @@ dependencies = [
     "langchain-core>=0.2.0",
     "langchain-openrouter>=0.1.0",
 
-    # Environment
+    # Env + HTTP
     "python-dotenv>=1.0.0",
-
-    # Agent tools — web fetch
     "httpx>=0.27.0",
     "beautifulsoup4>=4.12.0",
 ]
 
 [project.optional-dependencies]
-# Install with:  pip install -e ".[voice]"
+# Voice engine — install with:  pip install -e ".[voice]"
 voice = [
-    "openai-whisper",
-    "pyttsx3",
+    "faster-whisper>=1.0.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "edge-tts>=6.1.0",
 ]
 
 [project.scripts]
-# Launch with: ai-agent
 ai-agent = "ai_terminal.__main__:main"
