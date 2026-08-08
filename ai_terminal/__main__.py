@@ -1,3 +1,4 @@
+
 import os
 import asyncio
 import base64
@@ -26,7 +27,6 @@ from textual.reactive   import reactive
 from langchain_openrouter    import ChatOpenRouter
 from langchain_core.messages import SystemMessage, HumanMessage
 
-# ── Optional deps (graceful degradation if not installed) ───────────────────
 try:
     import httpx
     from bs4 import BeautifulSoup
@@ -52,7 +52,6 @@ try:
     TTS_AVAILABLE = True
 except ImportError:
     TTS_AVAILABLE = False
-
 
 try:
     from .open_router import get_available_models, aget_available_models
@@ -88,8 +87,29 @@ class VoiceEngine:
         self._recorded_frames: list = []
         self._tts_enabled     = False
         self._record_lock     = threading.Lock()
+        self.model_ready      = False   # FIX: track load state so UI can show it
 
-    # ── Lazy-load Whisper (first STT call only) ───────────────────────────
+    # ── Preload Whisper at app startup (FIX for "taking too much time") ───
+    # Previously the model only loaded on the FIRST F5 press — and on that
+    # first run faster-whisper silently downloads the model (~75MB) from
+    # Hugging Face if it isn't cached yet. That download + load (5-30s+
+    # depending on connection) looked exactly like a frozen "Transcribing…"
+    # because nothing distinguished "downloading the model" from
+    # "transcribing your 3-second clip". Now we load it once, in the
+    # background, right when the app opens — so by the time you actually
+    # press F5, it's instant.
+    def preload_whisper(self) -> None:
+        if not WHISPER_AVAILABLE:
+            return
+        if self._whisper is None:
+            self._whisper = WhisperModel(
+                self.WHISPER_MODEL_SIZE,
+                device="cpu",
+                compute_type="int8",
+            )
+        self.model_ready = True
+
+    # ── Lazy-load Whisper (fallback if preload hasn't finished yet) ───────
     def _get_whisper(self):
         if self._whisper is None:
             if not WHISPER_AVAILABLE:
@@ -99,6 +119,7 @@ class VoiceEngine:
                 device="cpu",
                 compute_type="int8",
             )
+            self.model_ready = True
         return self._whisper
 
     # ── Record until stop_recording() is called ───────────────────────────
@@ -261,15 +282,8 @@ FALLBACK_MODELS = [
 ]
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN APP
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class AITerminalApp(App):
 
-    # ── Keybindings ──────────────────────────────────────────────────────────
-    # FIX: Ctrl+A is grabbed by the terminal (select-all) before Textual sees it.
-    #      Moved agent toggle to F7. Voice uses F5/F6 (universally safe).
     BINDINGS = [
         ("ctrl+c",  "quit",         "Quit"),
         ("ctrl+l",  "clear",        "Clear Memory"),
@@ -491,6 +505,18 @@ class AITerminalApp(App):
     def on_mount(self) -> None:
         self.query_one("#input-panel").display = False
         self.load_models_async()
+        # FIX: preload Whisper in the background at startup so the first
+        # F5 press doesn't stall on a silent model download.
+        self.preload_voice_model()
+
+    @work(thread=True)
+    def preload_voice_model(self) -> None:
+        if not WHISPER_AVAILABLE:
+            return
+        try:
+            self.voice.preload_whisper()
+        except Exception:
+            pass   # Non-fatal — falls back to lazy-load on first use
 
     @work
     async def load_models_async(self) -> None:
@@ -566,6 +592,13 @@ class AITerminalApp(App):
             self._stop_voice_recording()
 
     def _start_voice_recording(self) -> None:
+        # FIX: tell the user up front if the model is still warming up,
+        # instead of letting them record and then silently stall.
+        if WHISPER_AVAILABLE and not self.voice.model_ready:
+            self.query_one("#status-label", Static).update(
+                "⏳ Voice model still loading (first run only) — try again in a few seconds…"
+            )
+            return
         ok = self.voice.start_recording()
         if ok:
             self.is_recording = True
@@ -579,7 +612,8 @@ class AITerminalApp(App):
         if audio is None or len(audio) == 0:
             self.query_one("#status-label", Static).update("⚠️  No audio captured.")
             return
-        self.query_one("#status-label", Static).update("⏳ Transcribing…")
+        duration_s = len(audio) / self.voice.SAMPLE_RATE
+        self.query_one("#status-label", Static).update(f"⏳ Transcribing {duration_s:.1f}s of audio…")
         self.transcribe_audio(audio)
 
     @work
@@ -587,12 +621,16 @@ class AITerminalApp(App):
         status = self.query_one("#status-label", Static)
         prompt_input = self.query_one("#prompt-input", Input)
         try:
-            text = await self.voice.transcribe(audio)
+            # FIX: hard timeout so a stuck transcription gives a clear error
+            # instead of leaving "Transcribing…" on screen forever.
+            text = await asyncio.wait_for(self.voice.transcribe(audio), timeout=25)
             if text:
                 prompt_input.value = text
                 status.update(f"🎙 Transcribed — press Enter to send")
             else:
                 status.update("⚠️  Transcription empty — try again.")
+        except asyncio.TimeoutError:
+            status.update("❌ Transcription timed out (> 25s) — try a shorter clip.")
         except Exception as e:
             status.update(f"❌ Transcription error: {e}")
 
@@ -792,6 +830,8 @@ class AITerminalApp(App):
                 "Keep responses concise and precise."
             ))
         ]
+        # FIX: also clear the visible transcript list, not just the LLM's
+        # own memory — otherwise the next turn would append onto stale UI.
         self.visible_transcript = []
         self.query_one("#ai-response", Markdown).update(
             "### 🧹 Memory cleared. Ready."
