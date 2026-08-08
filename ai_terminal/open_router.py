@@ -1,55 +1,9 @@
-"""
-openrouter_models.py
-
-Permanent fix for stale hardcoded free-model slugs.
-
-Problem this solves:
-    OpenRouter's free-tier catalog is a rotating door — providers pull models
-    from the free tier (or kill the slug entirely) without warning. Any
-    hardcoded list like:
-
-        AVAILABLE_MODELS = [
-            ("Llama 4 Maverick", "meta-llama/llama-4-maverick:free"),
-            ...
-        ]
-
-    WILL go stale. This module replaces that pattern by asking OpenRouter
-    itself, at runtime, "what's actually free right now?"
-
-How it works:
-    1. On startup, fetch https://openrouter.ai/api/v1/models (no API key
-       required for this endpoint — it's public).
-    2. Filter for entries where pricing.prompt == "0" AND
-       pricing.completion == "0" (OpenRouter's own definition of free).
-    3. Build (label, slug) tuples for your UI dropdown, same shape as your
-       original AVAILABLE_MODELS list — this is a drop-in replacement.
-    4. Cache the result locally (default 6 hours) so you're not hitting the
-       API on every single launch, and so the app still works if OpenRouter
-       is briefly unreachable.
-    5. If the fetch fails AND there's no usable cache, fall back to a small
-       hardcoded safety-net list — this is the only place a hardcoded slug
-       still lives, and it exists purely so the app never fully bricks.
-
-Usage (sync, e.g. at the top of your app before Textual starts):
-
-    from openrouter_models import get_available_models
-    AVAILABLE_MODELS = get_available_models()
-
-Usage (async, e.g. inside Textual's on_mount via @work, to refresh without
-blocking the UI):
-
-    from openrouter_models import aget_available_models
-
-    @work
-    async def refresh_models(self) -> None:
-        self.available_models = await aget_available_models(force_refresh=True)
-"""
-
 from __future__ import annotations
 
 import json
 import time
 import logging
+import re
 from pathlib import Path
 from typing import List, Tuple
 
@@ -59,29 +13,26 @@ logger = logging.getLogger(__name__)
 
 MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models"
 
-# Where we cache the last successful fetch. Adjust if your app already has
-# a config/cache directory convention.
 CACHE_DIR = Path.home() / ".cache" / "ai-terminal-app"
 CACHE_FILE = CACHE_DIR / "free_models_cache.json"
-CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours — free tier doesn't churn hourly
+CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours
 
-# Absolute last resort if the API is unreachable AND no cache exists yet
-# (e.g. first-ever run with no internet). Keep this list SHORT and only
-# put slugs here you're fairly confident about — treat it as an emergency
-# fallback, not a source of truth.
 EMERGENCY_FALLBACK: List[Tuple[str, str]] = [
     ("OpenRouter Auto-Free Router", "openrouter/free"),
 ]
 
 REQUEST_TIMEOUT = 10.0
 
+# FIX: known non-chat generation model families — belt-and-braces exclusion
+# even if a future catalog entry reports misleading modality data.
+NON_CHAT_ID_PATTERNS = re.compile(
+    r"(lyria|veo|imagen|music|-tts|text-to-speech|whisper|dall-e|stable-diffusion)",
+    re.IGNORECASE,
+)
+
 
 def _format_label(model: dict) -> str:
-    """Build a display label like your original style, e.g.
-    'Gemma 4 31B  [262K · Vision & Text]'
-    """
     name = model.get("name") or model.get("id", "Unknown model")
-    # Strip common redundant prefixes some providers include, e.g. "Google: "
     if ":" in name and "/" not in name:
         name = name.split(":", 1)[-1].strip()
 
@@ -103,26 +54,52 @@ def _is_free(model: dict) -> bool:
     prompt_price = pricing.get("prompt")
     completion_price = pricing.get("completion")
 
-    # Pricing is the source of truth whenever it's present — this is what
-    # caught the actual bug you hit: a model can keep a ":free"-looking id
-    # around even after OpenRouter starts charging for it. Only fall back
-    # to the id-suffix convention if pricing data is missing/malformed.
     if prompt_price is not None and completion_price is not None:
         return prompt_price in ("0", 0) and completion_price in ("0", 0)
 
     return str(model.get("id", "")).endswith(":free")
 
 
+def _is_text_chat_model(model: dict) -> bool:
+    """
+    FIX: reject non-chat generation models (music/image/video/audio-only)
+    that can pass the price filter while being unusable for chat completions.
+    """
+    model_id = str(model.get("id", ""))
+    name = str(model.get("name", ""))
+
+    # Belt-and-braces: known non-chat families by name/id pattern
+    if NON_CHAT_ID_PATTERNS.search(model_id) or NON_CHAT_ID_PATTERNS.search(name):
+        return False
+
+    arch = model.get("architecture") or {}
+    output_modalities = arch.get("output_modalities")
+
+    # Primary signal: model must actually output text to be usable in chat
+    if output_modalities:
+        return "text" in output_modalities
+
+    # If output_modalities isn't reported, fall back to the 'modality'
+    # string some catalog versions use, e.g. "text->text" or "text+image->text"
+    modality_str = arch.get("modality", "")
+    if modality_str and "->" in modality_str:
+        output_side = modality_str.split("->")[-1]
+        return "text" in output_side
+
+    # Unknown/missing modality info — assume it's a normal chat model
+    return True
+
+
 def _parse_models(payload: dict) -> List[Tuple[str, str]]:
     entries = payload.get("data", [])
-    free = [m for m in entries if _is_free(m)]
+    free_chat = [
+        m for m in entries
+        if _is_free(m) and _is_text_chat_model(m)
+    ]
 
-    # Sort by context length (descending) so bigger/more-capable free
-    # models surface first in the dropdown — purely cosmetic, adjust to
-    # taste (e.g. sort alphabetically instead).
-    free.sort(key=lambda m: m.get("context_length") or 0, reverse=True)
+    free_chat.sort(key=lambda m: m.get("context_length") or 0, reverse=True)
 
-    return [(_format_label(m), m["id"]) for m in free if m.get("id")]
+    return [(_format_label(m), m["id"]) for m in free_chat if m.get("id")]
 
 
 def _read_cache() -> List[Tuple[str, str]] | None:
@@ -151,10 +128,6 @@ def _write_cache(models: List[Tuple[str, str]]) -> None:
 
 
 def get_available_models(force_refresh: bool = False) -> List[Tuple[str, str]]:
-    """Synchronous entry point. Drop-in replacement for a hardcoded
-    AVAILABLE_MODELS list. Safe to call at module import time, before
-    the Textual event loop starts.
-    """
     if not force_refresh:
         cached = _read_cache()
         if cached:
@@ -168,12 +141,10 @@ def get_available_models(force_refresh: bool = False) -> List[Tuple[str, str]]:
             if models:
                 _write_cache(models)
                 return models
-            logger.warning("OpenRouter returned zero free models — using cache/fallback.")
+            logger.warning("OpenRouter returned zero free text-chat models — using cache/fallback.")
     except (httpx.HTTPError, ValueError) as e:
         logger.warning("Failed to fetch live model list from OpenRouter: %s", e)
 
-    # Fetch failed or returned nothing usable — try stale cache before
-    # giving up entirely (better a slightly old list than none at all).
     stale = _read_cache()
     if stale:
         return stale
@@ -183,9 +154,6 @@ def get_available_models(force_refresh: bool = False) -> List[Tuple[str, str]]:
 
 
 async def aget_available_models(force_refresh: bool = False) -> List[Tuple[str, str]]:
-    """Async entry point — use this inside Textual's @work workers so the
-    fetch never blocks the UI thread.
-    """
     if not force_refresh:
         cached = _read_cache()
         if cached:
@@ -199,7 +167,7 @@ async def aget_available_models(force_refresh: bool = False) -> List[Tuple[str, 
             if models:
                 _write_cache(models)
                 return models
-            logger.warning("OpenRouter returned zero free models — using cache/fallback.")
+            logger.warning("OpenRouter returned zero free text-chat models — using cache/fallback.")
     except (httpx.HTTPError, ValueError) as e:
         logger.warning("Failed to fetch live model list from OpenRouter: %s", e)
 
@@ -212,9 +180,8 @@ async def aget_available_models(force_refresh: bool = False) -> List[Tuple[str, 
 
 
 if __name__ == "__main__":
-    # Quick manual test: python openrouter_models.py
     logging.basicConfig(level=logging.INFO)
     models = get_available_models(force_refresh=True)
-    print(f"\nFound {len(models)} free models:\n")
+    print(f"\nFound {len(models)} free text-chat models:\n")
     for label, slug in models:
         print(f"  {label:55s} -> {slug}")

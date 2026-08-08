@@ -13,7 +13,6 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir    = os.path.dirname(current_dir)
 load_dotenv(os.path.join(root_dir, ".env"))
 
-# ── Textual ──────────────────────────────────────────────────────────────────
 from textual.app        import App, ComposeResult
 from textual.containers import VerticalScroll, Container, Horizontal, Vertical
 from textual.widgets    import (
@@ -23,10 +22,8 @@ from textual.widgets    import (
 from textual            import work
 from textual.reactive   import reactive
 
-# ── LangChain ────────────────────────────────────────────────────────────────
 from langchain_openrouter    import ChatOpenRouter
 from langchain_core.messages import SystemMessage, HumanMessage
-
 try:
     import httpx
     from bs4 import BeautifulSoup
@@ -280,6 +277,7 @@ class LocalAgent:
 FALLBACK_MODELS = [
     ("OpenRouter Auto-Free Router", "openrouter/free"),
 ]
+
 
 
 class AITerminalApp(App):
@@ -625,8 +623,13 @@ class AITerminalApp(App):
             # instead of leaving "Transcribing…" on screen forever.
             text = await asyncio.wait_for(self.voice.transcribe(audio), timeout=25)
             if text:
+                # FIX: send straight to the model — no need to press Enter.
+                # We still briefly show the transcript in the input box so
+                # the user can see what was heard, then clear it and submit.
                 prompt_input.value = text
-                status.update(f"🎙 Transcribed — press Enter to send")
+                status.update(f"🎙 Heard: \"{text}\" — sending…")
+                prompt_input.value = ""
+                await self._submit_prompt(text)
             else:
                 status.update("⚠️  Transcription empty — try again.")
         except asyncio.TimeoutError:
@@ -677,14 +680,18 @@ class AITerminalApp(App):
         user_prompt = event.value.strip()
         if not user_prompt:
             return
+        self.query_one("#prompt-input", Input).value = ""
+        await self._submit_prompt(user_prompt)
 
+    # FIX: shared submission path — used by Enter key AND by voice STT so
+    # a transcribed prompt can be sent straight to the model without the
+    # user needing to press Enter afterward.
+    async def _submit_prompt(self, user_prompt: str) -> None:
         model_selector = self.query_one("#model-selector", Select)
         selected_model = model_selector.value
         if not selected_model or selected_model == Select.BLANK:
             self.query_one("#status-label", Static).update("⚠️  Select a model first!")
             return
-
-        self.query_one("#prompt-input", Input).value = ""
 
         # Slash command → agent tool
         if user_prompt.startswith("/"):
@@ -771,8 +778,6 @@ class AITerminalApp(App):
     async def run_llm_query(self, full_prompt: str, display_prompt: str, model_id: str) -> None:
         status = self.query_one("#status-label", Static)
 
-        # FIX: append a new "You" turn instead of replacing the whole panel —
-        # this is what makes the running conversation visible.
         self._append_turn(f"### 💬 You:\n{display_prompt}\n\n*Thinking…*")
 
         api_key = os.environ.get("OPENROUTER_API_KEY")
