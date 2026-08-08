@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-terminal-agent"
+name = "multi-model-term-ai"
 version = "2.1.0"
 description = "A multi-model AI terminal assistant with voice, rich input panel, and local agent tools"
 readme = "README.md"
