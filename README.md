@@ -38,8 +38,7 @@ https://github.com/user-attachments/assets/963743da-e99f-45b9-a973-7f7fde73c385
 
 <div align="center">
 
-<!-- TODO: replace with your new v2.1 screenshot -->
-<img src="./assets/ai-terminal-app-v2.1.png" alt="ai-terminal-app v2.1 screenshot" width="800"/>
+<img src="/asset/newupdated.png" alt="ai-terminal-app v2.1 screenshot" width="800"/>
 
 </div>
 
