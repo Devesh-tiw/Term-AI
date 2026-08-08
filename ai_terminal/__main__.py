@@ -77,12 +77,23 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
 
-# ── Model loader (FIX: was 'open_router', correct name is 'openrouter_models') ──
+# ── Model loader ──────────────────────────────────────────────────────────
+# FIX: absolute import only works when run as `python __main__.py` directly.
+# When launched via the installed `ai-agent` entry point (package mode:
+# ai_terminal.__main__:main), an absolute import can't see a sibling module
+# — it silently failed and DYNAMIC_MODELS stayed False forever, which is why
+# only the 1-item fallback list ("OpenRouter Auto-Free Router") ever showed.
+# Try relative import first (package mode), then fall back to absolute
+# (direct script mode).
 try:
-    from openrouter_models import get_available_models, aget_available_models
+    from .openrouter_models import get_available_models, aget_available_models
     DYNAMIC_MODELS = True
 except ImportError:
-    DYNAMIC_MODELS = False
+    try:
+        from openrouter_models import get_available_models, aget_available_models
+        DYNAMIC_MODELS = True
+    except ImportError:
+        DYNAMIC_MODELS = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -425,6 +436,12 @@ class AITerminalApp(App):
         # FIX: Do NOT call get_available_models() here — it blocks.
         #      Models are loaded async in on_mount via @work.
         self._models: list = FALLBACK_MODELS
+        # FIX: visible transcript — every markdown.update() was previously
+        # REPLACING the whole panel with only the latest turn, wiping prior
+        # Q&A off screen even though self.chat_history (sent to the model)
+        # was fine. Now we accumulate turns here and always render the
+        # full list, so the conversation actually stays visible.
+        self.visible_transcript: list[str] = []
 
     # ── Layout ────────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
@@ -634,6 +651,23 @@ class AITerminalApp(App):
             f"{rec_icon}  {tts_icon}  {agt_icon}"
         )
 
+    # ── Transcript rendering (FIX for "memory not visible") ───────────────
+    def _render_transcript(self) -> None:
+        """Render the full accumulated conversation, not just the latest turn."""
+        markdown = self.query_one("#ai-response", Markdown)
+        if not self.visible_transcript:
+            markdown.update(
+                "### 🤖 AI Terminal  v2.1  — Ready\n"
+                "Send a prompt to get started."
+            )
+            return
+        markdown.update("\n\n---\n\n".join(self.visible_transcript))
+
+    def _append_turn(self, block: str) -> None:
+        """Add one turn to the visible transcript and re-render."""
+        self.visible_transcript.append(block)
+        self._render_transcript()
+
     # ── Submit ────────────────────────────────────────────────────────────
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         user_prompt = event.value.strip()
@@ -725,20 +759,25 @@ class AITerminalApp(App):
         else:
             result = f"❌ Unknown: `{verb}`. Try `/shell` `/read` `/write` `/fetch`"
 
-        markdown.update(f"### ⚙️ Agent: `{command}`\n\n---\n\n{result}")
+        self._append_turn(f"### ⚙️ Agent: `{command}`\n\n{result}")
         status.update("✅ Done.")
 
     # ── LLM query ─────────────────────────────────────────────────────────
     @work(exclusive=True)
     async def run_llm_query(self, full_prompt: str, display_prompt: str, model_id: str) -> None:
-        markdown = self.query_one("#ai-response", Markdown)
-        status   = self.query_one("#status-label", Static)
+        status = self.query_one("#status-label", Static)
 
-        markdown.update(f"### 💬 You:\n{display_prompt}\n\n---\n\n*Thinking…*")
+        # FIX: append a new "You" turn instead of replacing the whole panel —
+        # this is what makes the running conversation visible.
+        self._append_turn(f"### 💬 You:\n{display_prompt}\n\n*Thinking…*")
 
         api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
-            markdown.update("❌ **Error:** `OPENROUTER_API_KEY` not set in `.env`.")
+            self.visible_transcript[-1] = (
+                f"### 💬 You:\n{display_prompt}\n\n"
+                "❌ **Error:** `OPENROUTER_API_KEY` not set in `.env`."
+            )
+            self._render_transcript()
             status.update("❌ Missing API Key.")
             return
 
@@ -757,20 +796,22 @@ class AITerminalApp(App):
             self.chat_history.append(response)
 
             reply_text = response.content
-            markdown.update(f"### 💬 You:\n{display_prompt}\n\n---\n\n{reply_text}")
+            # Replace the "Thinking…" placeholder turn with the real answer
+            self.visible_transcript[-1] = f"### 💬 You:\n{display_prompt}\n\n{reply_text}"
+            self._render_transcript()
             status.update("✅ Done.")
 
             # TTS: speak the response if enabled
             if self.tts_on:
-                # Strip markdown for cleaner speech
                 import re
                 plain = re.sub(r"[`#*_\[\]()]", "", reply_text)
                 self.speak_response(plain[:1000])   # cap at 1000 chars
 
         except Exception as e:
-            markdown.update(
-                f"### 💬 You:\n{display_prompt}\n\n---\n\n❌ **Error:**\n```\n{e}\n```"
+            self.visible_transcript[-1] = (
+                f"### 💬 You:\n{display_prompt}\n\n❌ **Error:**\n```\n{e}\n```"
             )
+            self._render_transcript()
             status.update("❌ Error.")
 
     @work(exclusive=False)
@@ -785,6 +826,9 @@ class AITerminalApp(App):
                 "Keep responses concise and precise."
             ))
         ]
+        # FIX: also clear the visible transcript list, not just the LLM's
+        # own memory — otherwise the next turn would append onto stale UI.
+        self.visible_transcript = []
         self.query_one("#ai-response", Markdown).update(
             "### 🧹 Memory cleared. Ready."
         )
