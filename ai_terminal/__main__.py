@@ -4,7 +4,7 @@ import asyncio
 import base64
 import subprocess
 from pathlib import Path
-
+from open_router import get_available_models
 from dotenv import load_dotenv
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -214,19 +214,8 @@ class AITerminalApp(App):
     }
     """
 
-    AVAILABLE_MODELS = [
-        ("✦ Gemini 2.5 Pro  [1M ctx · Vision · Best Reasoning]",  "google/gemini-2.5-pro:free"),
-        ("✦ Gemini 2.5 Flash [1M ctx · Vision · Fast]",            "google/gemini-2.5-flash:free"),
-        ("✦ DeepSeek R1  [163K · Top Coder · Chain-of-Thought]",   "deepseek/deepseek-r1:free"),
-        ("✦ Llama 4 Maverick [400K · Vision · Meta Best]",         "meta-llama/llama-4-maverick:free"),
-        ("✦ Qwen 2.5-VL 72B  [Vision + Code]",                     "qwen/qwen2.5-vl-72b-instruct:free"),
 
-        ("  Gemma 4 31B  [Vision & Text]",                         "google/gemma-4-31b-it:free"),
-        ("  NVIDIA Nemotron 3 Ultra [1M ctx]",                     "nvidia/nemotron-3-ultra-550b-a55b:free"),
-        ("  NVIDIA Nemotron 3 Super [120B]",                        "nvidia/nemotron-3-super-120b-a12b:free"),
-        ("  Cohere North Mini Code [256K]",                         "cohere/north-mini-code:free"),
-        ("  OpenRouter Auto-Free Router",                           "openrouter/free"),
-    ]
+    AVAILABLE_MODELS = get_available_models()
 
     CONTENT_TYPES = [
         ("💬 Plain text / question",  "text"),
