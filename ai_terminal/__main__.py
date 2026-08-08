@@ -1,27 +1,3 @@
-"""
-ai-terminal-app  ·  __main__.py
-Author : Devesh Tiwari — AI Engineering, Amrita Vishwa Vidyapeetham
-Version: 2.1.0
-
-Fixes in this version
-──────────────────────
-1. BUG FIX  — Wrong import name (open_router → openrouter_models)
-2. BUG FIX  — App hang on startup: AVAILABLE_MODELS was fetched at class
-              definition time (blocking). Now loaded async in on_mount via @work.
-3. BUG FIX  — Ctrl+A intercepted by terminal before Textual. Changed to F5/F6/F7.
-4. FEATURE  — Voice Engine: F5 = record (Whisper STT), F6 = toggle TTS (edge-tts)
-
-Keybindings (updated)
-──────────────────────
-  Enter    → submit prompt
-  Ctrl+L   → clear memory
-  Ctrl+P   → toggle rich input panel
-  Ctrl+C   → quit
-  F5       → record voice (hold → speak → release to transcribe)
-  F6       → toggle TTS on/off
-  F7       → toggle Agent mode  (was Ctrl+A — terminal conflict fixed)
-"""
-
 import os
 import asyncio
 import base64
@@ -77,20 +53,13 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
 
-# ── Model loader ──────────────────────────────────────────────────────────
-# FIX: absolute import only works when run as `python __main__.py` directly.
-# When launched via the installed `ai-agent` entry point (package mode:
-# ai_terminal.__main__:main), an absolute import can't see a sibling module
-# — it silently failed and DYNAMIC_MODELS stayed False forever, which is why
-# only the 1-item fallback list ("OpenRouter Auto-Free Router") ever showed.
-# Try relative import first (package mode), then fall back to absolute
-# (direct script mode).
+
 try:
-    from .openrouter_models import get_available_models, aget_available_models
+    from .open_router import get_available_models, aget_available_models
     DYNAMIC_MODELS = True
 except ImportError:
     try:
-        from openrouter_models import get_available_models, aget_available_models
+        from .open_router import get_available_models, aget_available_models
         DYNAMIC_MODELS = True
     except ImportError:
         DYNAMIC_MODELS = False
@@ -287,9 +256,6 @@ class LocalAgent:
             return f"❌ **Fetch error:** {e}"
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  EMERGENCY FALLBACK MODELS (used if openrouter_models.py import fails)
-# ═══════════════════════════════════════════════════════════════════════════════
 FALLBACK_MODELS = [
     ("OpenRouter Auto-Free Router", "openrouter/free"),
 ]
@@ -546,7 +512,7 @@ class AITerminalApp(App):
                 selector.set_options(FALLBACK_MODELS)
                 selector.value = FALLBACK_MODELS[0][1]
         else:
-            status.update("⚠️  openrouter_models.py not found — using fallback.")
+            status.update("⚠️  open_router.py not found — using fallback.")
             selector.set_options(FALLBACK_MODELS)
             selector.value = FALLBACK_MODELS[0][1]
 
