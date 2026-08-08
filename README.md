@@ -17,7 +17,7 @@ This isn't a one-off script wrapped in a shell file — it's a `pip`-installable
 - Dynamic model routing via OpenRouter's model slug system, filtered to text-chat-capable models only
 - Voice in, voice out — local Whisper transcription (F5) and spoken responses via edge-tts (F6)
 - Built-in agent tools (`/shell`, `/read`, `/write`, `/fetch`) for an optional Agent mode
-- Secure `.env`-based credential management
+- Secure `.env`-based credential management, with a guided first-run setup screen if you skip it
 - Mouse + keyboard driven Textual interface
 
 ---
@@ -114,14 +114,38 @@ Rather than hardcoding a single model, requests are routed through OpenRouter us
 
 This project has moved past shell/batch launch scripts. It's now a proper Python package defined by `pyproject.toml`, meaning it installs like any other CLI tool and registers a real executable on your system.
 
-### Step 1 — Clone the repository
+### 🚀 Fastest way — install from PyPI
+
+If you just want to use the tool, skip everything below and run:
 
 ```bash
-git clone https://github.com/your-username/ai-terminal-app.git
-cd ai-terminal-app
+pip install multi-model-term-ai
 ```
 
-### Step 2 — Create and activate a virtual environment
+or, for a true global install outside any virtual environment:
+
+```bash
+pipx install multi-model-term-ai
+```
+
+Either way, you still need an OpenRouter API key — on first launch, a setup screen opens automatically and walks you through getting one and pasting it in, so you don't need to touch a `.env` file by hand. Then launch with:
+
+```bash
+ai-agent
+```
+
+### 🛠️ Installing from source (for contributors / latest main)
+
+Want to modify the code, or run the very latest unreleased changes? Install from source instead:
+
+#### Step 1 — Clone the repository
+
+```bash
+git clone https://github.com/Devesh-tiw/Term-AI.git
+cd Term-AI
+```
+
+#### Step 2 — Create and activate a virtual environment
 
 **🐧 Linux / macOS**
 ```bash
@@ -135,7 +159,7 @@ python -m venv venv
 venv\Scripts\Activate.ps1
 ```
 
-### Step 3 — Configure your environment variables 🔐
+#### Step 3 — Configure your environment variables 🔐
 
 Copy the provided example file and fill in your own OpenRouter API key:
 
@@ -151,8 +175,10 @@ OPENROUTER_API_KEY=your_api_key_here
 ```
 
 > ⚠️ `.env` is git-ignored by default — never commit real credentials. `python-dotenv` loads this file automatically at runtime via `load_dotenv()`.
+>
+> **Prefer not to edit `.env` by hand?** You can skip this step entirely — if `OPENROUTER_API_KEY` isn't set when the app launches, a one-time setup screen opens automatically and walks you through getting a key and pasting it in, saving it to `.env` for you.
 
-### Step 4 — Install the package 📦
+#### Step 4 — Install the package 📦
 
 ```bash
 pip install -e .
@@ -168,7 +194,7 @@ pip install -e ".[voice]"
 
 > ℹ️ On first launch, the Whisper model preloads in a background thread (`on_mount`) so the F5 voice key is ready immediately instead of stalling on first use.
 
-### Step 5 — Launch it from anywhere
+#### Step 5 — Launch it from anywhere
 
 Once installed, forget `python ai_app.py` or `./launch.sh` entirely. The package registers a global command:
 
@@ -178,7 +204,7 @@ ai-agent
 
 You can now run `ai-agent` from **any directory**, in any shell session, as long as your virtual environment is active.
 
-### 🌍 (Optional) True global installation with pipx
+#### (Optional) True global installation with pipx
 
 If you'd like `ai-agent` available system-wide, outside of any virtual environment, use [`pipx`](https://pypa.github.io/pipx/):
 
@@ -199,6 +225,7 @@ Launch the assistant with `ai-agent` and start chatting immediately.
 | `Enter`          | Submit your prompt to the AI                                              |
 | `Ctrl + L`        | Clear conversation memory                                                  |
 | `Ctrl + P`         | Toggle the rich input panel (paste code, docs, images, or file paths)        |
+| `Ctrl + Y`          | Copy the last AI reply to your clipboard                                      |
 | `Ctrl + C`           | Quit the application                                                          |
 | `F5`                  | Toggle voice recording — transcribes via local Whisper and sends automatically, no `Enter` needed |
 | `F6`                    | Toggle text-to-speech — AI responses are spoken aloud via `edge-tts`             |
@@ -229,6 +256,9 @@ With Agent mode on (`F7`), the following tools are available directly from the i
 - **Fixed voice "stuck transcribing"** — the Whisper model now preloads at startup instead of lazy-loading on first `F5` press, plus a 25s hard timeout with a clear error if transcription genuinely stalls.
 - **Fixed non-chat models appearing in the picker** — added `_is_text_chat_model()` plus a regex safety net to exclude music/image/TTS/whisper models (e.g. Lyria) that were slipping past the free-tier filter.
 - **Voice now sends automatically** — transcription is wired into a shared `_submit_prompt()` method, so speaking a prompt no longer requires an extra `Enter` press.
+- **Added a guided first-run setup screen** — if no API key is found on launch, a two-step wizard walks you through getting one from OpenRouter and saving it, instead of failing with a raw error.
+- **Added one-key copy** — `Ctrl + Y` copies the last AI reply straight to your clipboard.
+- **Published to PyPI** as `multi-model-term-ai`, so `pip install multi-model-term-ai` now works without cloning the repo.
 
 ---
 
