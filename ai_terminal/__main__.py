@@ -5,6 +5,7 @@ import tempfile
 import threading
 import webbrowser
 from pathlib import Path
+
 from dotenv import load_dotenv
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir    = os.path.dirname(current_dir)
@@ -38,6 +39,7 @@ try:
 except ImportError:
     AUDIO_AVAILABLE = False
 
+    
 try:
     from faster_whisper import WhisperModel
     WHISPER_AVAILABLE = True
