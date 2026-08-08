@@ -2,9 +2,6 @@
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["ai_terminal"]
-
 [project]
 name = "multi-model-term-ai"
 version = "2.1.0"
@@ -42,3 +39,6 @@ voice = [
 
 [project.scripts]
 ai-agent = "ai_terminal.__main__:main"
+
+[tool.setuptools]
+packages = ["ai_terminal"]
