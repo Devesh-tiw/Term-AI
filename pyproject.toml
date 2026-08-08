@@ -2,9 +2,9 @@
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-include = ["ai_terminal*"]
-exclude = ["asset*"]
+[tool.setuptools]
+packages = ["ai_terminal"]
+
 [project]
 name = "multi-model-term-ai"
 version = "2.1.0"
