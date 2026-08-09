@@ -1,12 +1,17 @@
 import os
+import re
 import asyncio
 import base64
 import tempfile
 import threading
 import webbrowser
+import platform
+import subprocess
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir    = os.path.dirname(current_dir)
 load_dotenv(os.path.join(root_dir, ".env"))
@@ -39,7 +44,6 @@ try:
 except ImportError:
     AUDIO_AVAILABLE = False
 
-    
 try:
     from faster_whisper import WhisperModel
     WHISPER_AVAILABLE = True
@@ -61,6 +65,11 @@ except ImportError:
         DYNAMIC_MODELS = True
     except ImportError:
         DYNAMIC_MODELS = False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  VOICE ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class VoiceEngine:
     """
@@ -270,6 +279,88 @@ class LocalAgent:
         except Exception as e:
             return f"❌ **Fetch error:** {e}"
 
+    # ── Open a local application by name (cross-platform, best-effort) ────
+    @staticmethod
+    async def open_app(app_name: str) -> str:
+        app_name = app_name.strip()
+        if not app_name:
+            return "❌ No app name given."
+        system = platform.system()
+        try:
+            if system == "Windows":
+                # `start` resolves both Start-Menu shortcuts and known .exe names.
+                subprocess.Popen(f'start "" "{app_name}"', shell=True)
+            elif system == "Darwin":
+                # macOS resolves app names via Spotlight-style matching.
+                subprocess.Popen(["open", "-a", app_name])
+            else:
+                # Linux has no universal launcher-by-name; guess the binary
+                # name from the spoken name (lowercase, spaces → hyphens),
+                # which matches most common package names (e.g. "vs code"
+                # → "vs-code" style attempts, "spotify" → "spotify").
+                candidate = app_name.lower().replace(" ", "-")
+                subprocess.Popen([candidate])
+            return f"🚀 Opening **{app_name}**…"
+        except Exception as e:
+            return (
+                f"❌ Couldn't open **{app_name}**: {e}\n"
+                f"(On Linux, the app must be on your PATH under that exact name.)"
+            )
+
+    # ── Open Spotify and search for a song (cross-platform via URI scheme) ─
+    @staticmethod
+    async def play_on_spotify(query: str) -> str:
+        query = query.strip()
+        if not query:
+            return "❌ No song/artist given."
+        try:
+            # spotify: URI is handled by the installed desktop app on
+            # Windows/macOS/Linux if Spotify has registered itself as the
+            # handler (true by default after a normal install).
+            opened = webbrowser.open(f"spotify:search:{quote(query)}")
+            if not opened:
+                # Fallback: open the web player instead of failing silently.
+                webbrowser.open(f"https://open.spotify.com/search/{quote(query)}")
+            return f"🎵 Opening Spotify and searching for **{query}**…"
+        except Exception as e:
+            return f"❌ Couldn't open Spotify: {e}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  NATURAL-LANGUAGE LOCAL ACTIONS
+#  Lets the user just say "open spotify" or "play Blinding Lights on spotify"
+#  in plain speech/text — no /slash-command syntax needed. Kept deliberately
+#  narrow (short, anchored patterns) to avoid false-triggering on ordinary
+#  questions that happen to contain these words, e.g. "open source" or
+#  "what's playing on the radio".
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SPOTIFY_RE  = re.compile(r"^\s*play\s+(.+?)\s+on\s+spotify\s*$", re.IGNORECASE)
+_OPEN_APP_RE = re.compile(r"^\s*open\s+(?:the\s+)?([A-Za-z0-9 _\-]{2,30}?)(?:\s+app)?\s*$", re.IGNORECASE)
+
+
+def match_local_action(text: str):
+    """Return ('spotify'|'open_app', target) if the prompt is a direct local
+    command, else None. Deliberately conservative — only matches short,
+    command-shaped phrases, not general conversation."""
+    text = text.strip()
+    if not text or len(text.split()) > 8:
+        return None
+    m = _SPOTIFY_RE.match(text)
+    if m:
+        return ("spotify", m.group(1).strip())
+    m = _OPEN_APP_RE.match(text)
+    if m:
+        target = m.group(1).strip()
+        # Real app names are almost never more than 3 words ("visual
+        # studio code" is the extreme case) — anything longer is very
+        # likely an ordinary sentence starting with "open" ("open source
+        # projects are great"), not a command. Reject those.
+        if len(target.split()) > 3:
+            return None
+        return ("open_app", target)
+    return None
+
 
 FALLBACK_MODELS = [
     ("OpenRouter Auto-Free Router", "openrouter/free"),
@@ -403,6 +494,7 @@ class ApiKeyScreen(Screen):
             error.update(f"❌ Could not save to .env: {e}")
             return
 
+        # Load it into the current process immediately — no restart needed.
         os.environ["OPENROUTER_API_KEY"] = key
         self.app.pop_screen()
 
@@ -541,11 +633,14 @@ class AITerminalApp(App):
         ("💻  Code snippet",            "code"),
     ]
 
+    # ── Reactive state ────────────────────────────────────────────────────
     agent_mode: reactive[bool] = reactive(False)
     panel_open: reactive[bool] = reactive(False)
     is_recording: reactive[bool] = reactive(False)
+    is_speaking:  reactive[bool] = reactive(False)   # True while TTS audio is playing
     tts_on: reactive[bool] = reactive(False)
 
+    # ── Init ──────────────────────────────────────────────────────────────
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.chat_history: list = [
@@ -616,11 +711,11 @@ class AITerminalApp(App):
                 id="panel-hint",
             )
 
-        
+        # Bottom: model select + agent toggle + status + prompt
         yield Container(
             Horizontal(
                 Select(
-                    FALLBACK_MODELS,     
+                    FALLBACK_MODELS,     # placeholder; replaced after models load
                     prompt="⏳ Loading models…",
                     id="model-selector",
                 ),
@@ -637,12 +732,14 @@ class AITerminalApp(App):
         )
 
         yield Footer()
-
     def on_mount(self) -> None:
         self.query_one("#input-panel").display = False
         self.load_models_async()
         self.preload_voice_model()
 
+        # First-run setup: if no API key is found, open the wizard on top
+        # of the main screen instead of letting the user hit a cryptic
+        # "OPENROUTER_API_KEY not set" error the first time they submit.
         if not os.environ.get("OPENROUTER_API_KEY"):
             self.push_screen(ApiKeyScreen())
 
@@ -653,7 +750,7 @@ class AITerminalApp(App):
         try:
             self.voice.preload_whisper()
         except Exception:
-            pass  
+            pass   # Non-fatal — falls back to lazy-load on first use
 
     @work
     async def load_models_async(self) -> None:
@@ -665,6 +762,7 @@ class AITerminalApp(App):
             try:
                 models = await aget_available_models()
                 self._models = models
+                # Rebuild the Select widget with real model list
                 selector.set_options(models)
                 if models:
                     selector.value = models[0][1]
@@ -678,6 +776,7 @@ class AITerminalApp(App):
             selector.set_options(FALLBACK_MODELS)
             selector.value = FALLBACK_MODELS[0][1]
 
+        # Update welcome text now that models are loaded
         self.query_one("#ai-response", Markdown).update(
             "### 🤖 AI Terminal  v2.1  — Ready\n\n"
             "| Key | Action |\n"
@@ -692,11 +791,14 @@ class AITerminalApp(App):
             "| `/write <path> <text>` | Write to file |\n"
             "| `/fetch <url>` | Fetch web page |"
         )
+
+    # ── Panel toggle ──────────────────────────────────────────────────────
     def action_toggle_panel(self) -> None:
         panel = self.query_one("#input-panel")
         self.panel_open = not self.panel_open
         panel.display = self.panel_open
 
+    # ── Agent toggle (F7 — was Ctrl+A, fixed terminal conflict) ──────────
     def action_toggle_agent(self) -> None:
         toggle = self.query_one("#agent-toggle", Switch)
         toggle.value = not toggle.value
@@ -711,10 +813,16 @@ class AITerminalApp(App):
         else:
             status.update("Ready.")
 
+    # ── Voice: F5 = toggle record ─────────────────────────────────────────
     def action_record_voice(self) -> None:
         if not AUDIO_AVAILABLE:
             self.query_one("#status-label", Static).update(
                 "❌ sounddevice not installed: pip install sounddevice numpy"
+            )
+            return
+        if self.is_speaking:
+            self.query_one("#status-label", Static).update(
+                "🔊 Wait for the AI to finish speaking before recording…"
             )
             return
         if not self.is_recording:
@@ -723,6 +831,12 @@ class AITerminalApp(App):
             self._stop_voice_recording()
 
     def _start_voice_recording(self) -> None:
+        # FIX: same guard as above, since this is also called automatically
+        # by the conversational auto-listen loop after TTS finishes.
+        if self.is_speaking:
+            return
+        # FIX: tell the user up front if the model is still warming up,
+        # instead of letting them record and then silently stall.
         if WHISPER_AVAILABLE and not self.voice.model_ready:
             self.query_one("#status-label", Static).update(
                 "⏳ Voice model still loading (first run only) — try again in a few seconds…"
@@ -750,8 +864,13 @@ class AITerminalApp(App):
         status = self.query_one("#status-label", Static)
         prompt_input = self.query_one("#prompt-input", Input)
         try:
+            # FIX: hard timeout so a stuck transcription gives a clear error
+            # instead of leaving "Transcribing…" on screen forever.
             text = await asyncio.wait_for(self.voice.transcribe(audio), timeout=25)
             if text:
+                # FIX: send straight to the model — no need to press Enter.
+                # We still briefly show the transcript in the input box so
+                # the user can see what was heard, then clear it and submit.
                 prompt_input.value = text
                 status.update(f"🎙 Heard: \"{text}\" — sending…")
                 prompt_input.value = ""
@@ -776,8 +895,13 @@ class AITerminalApp(App):
         )
 
     def _update_voice_bar(self) -> None:
-        rec_icon  = "🔴 Recording…" if self.is_recording else "🎙 F5=Record"
-        tts_icon  = "🔊 TTS ON"     if self.tts_on       else "🔊 F6=TTS off"
+        if self.is_speaking:
+            rec_icon = "🗣️ Speaking…"
+        elif self.is_recording:
+            rec_icon = "🔴 Recording…"
+        else:
+            rec_icon = "🎙 F5=Record"
+        tts_icon  = "🔊 TTS ON (conversational)" if self.tts_on else "🔊 F6=TTS off"
         agt_icon  = "🤖 Agent ON"   if self.agent_mode   else "🤖 F7=Agent off"
         self.query_one("#voice-bar", Static).update(
             f"{rec_icon}  {tts_icon}  {agt_icon}"
@@ -806,11 +930,21 @@ class AITerminalApp(App):
         self.query_one("#prompt-input", Input).value = ""
         await self._submit_prompt(user_prompt)
 
+    # FIX: shared submission path — used by Enter key AND by voice STT so
+    # a transcribed prompt can be sent straight to the model without the
+    # user needing to press Enter afterward.
     async def _submit_prompt(self, user_prompt: str) -> None:
         model_selector = self.query_one("#model-selector", Select)
         selected_model = model_selector.value
         if not selected_model or selected_model == Select.BLANK:
             self.query_one("#status-label", Static).update("⚠️  Select a model first!")
+            return
+
+        # Natural-language local action → run it directly, skip the LLM.
+        # E.g. "open spotify", "open notepad", "play Blinding Lights on spotify"
+        local_action = match_local_action(user_prompt)
+        if local_action:
+            self.run_local_action(user_prompt, local_action)
             return
 
         # Slash command → agent tool
@@ -828,7 +962,6 @@ class AITerminalApp(App):
 
         self.run_llm_query(full_prompt, user_prompt, str(selected_model))
 
-    # ── Build enriched prompt from panel ─────────────────────────────────
     async def _build_prompt(self, user_prompt: str) -> str:
         if not self.panel_open:
             return user_prompt
@@ -866,6 +999,23 @@ class AITerminalApp(App):
         return f"{user_prompt}\n\n---\n{panel_text}"
 
     @work(exclusive=False)
+    async def run_local_action(self, display_prompt: str, action) -> None:
+        kind, target = action
+        status = self.query_one("#status-label", Static)
+
+        if kind == "spotify":
+            status.update(f"🎵 Opening Spotify: {target}…")
+            result = await self.agent.play_on_spotify(target)
+        else:
+            status.update(f"🚀 Opening {target}…")
+            result = await self.agent.open_app(target)
+
+        self._append_turn(f"### 🗣️ You:\n{display_prompt}\n\n{result}")
+        status.update("✅ Done.")
+
+        if self.tts_on:
+            self.speak_response(result)
+    @work(exclusive=False)
     async def run_agent_command(self, command: str) -> None:
         markdown = self.query_one("#ai-response", Markdown)
         status   = self.query_one("#status-label", Static)
@@ -892,7 +1042,6 @@ class AITerminalApp(App):
         self._append_turn(f"### ⚙️ Agent: `{command}`\n\n{result}")
         status.update("✅ Done.")
 
-    # ── LLM query ─────────────────────────────────────────────────────────
     @work(exclusive=True)
     async def run_llm_query(self, full_prompt: str, display_prompt: str, model_id: str) -> None:
         status = self.query_one("#status-label", Static)
@@ -924,6 +1073,7 @@ class AITerminalApp(App):
             self.chat_history.append(response)
 
             reply_text = response.content
+            # Replace the "Thinking…" placeholder turn with the real answer
             self.visible_transcript[-1] = f"### 💬 You:\n{display_prompt}\n\n{reply_text}"
             self._render_transcript()
             status.update("✅ Done.")
@@ -932,7 +1082,7 @@ class AITerminalApp(App):
             if self.tts_on:
                 import re
                 plain = re.sub(r"[`#*_\[\]()]", "", reply_text)
-                self.speak_response(plain[:1000])   # cap at 1000 chars
+                self.speak_response(plain[:1000])
 
         except Exception as e:
             self.visible_transcript[-1] = (
@@ -943,8 +1093,22 @@ class AITerminalApp(App):
 
     @work(exclusive=False)
     async def speak_response(self, text: str) -> None:
-        await self.voice.speak(text)
+        self.is_speaking = True
+        self._update_voice_bar()
+        try:
+            await self.voice.speak(text)
+        finally:
+            self.is_speaking = False
+            self._update_voice_bar()
+            if (
+                self.tts_on
+                and AUDIO_AVAILABLE
+                and not self.is_recording
+                and WHISPER_AVAILABLE
+            ):
+                self._start_voice_recording()
 
+    # ── Copy last AI reply (Ctrl+Y) ─────────────────────────────────────────
     def action_copy_output(self) -> None:
         status = self.query_one("#status-label", Static)
         if not self.visible_transcript:
