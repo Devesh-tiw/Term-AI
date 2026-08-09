@@ -67,10 +67,19 @@ except ImportError:
         DYNAMIC_MODELS = False
 
 
+
 class VoiceEngine:
-    WHISPER_MODEL_SIZE = "tiny"
-    SAMPLE_RATE        = 16_000
-    TTS_VOICE          = "en-US-AriaNeural"
+    """
+    STT: faster-whisper (local, offline, tiny model ~75MB).
+    TTS: edge-tts (Microsoft Azure voices, free, async, excellent quality).
+
+    Install:
+        pip install faster-whisper sounddevice numpy edge-tts
+    """
+
+    WHISPER_MODEL_SIZE = "tiny"   
+    SAMPLE_RATE        = 16_000  
+    TTS_VOICE          = "en-US-AriaNeural"  
 
     def __init__(self):
         self._whisper: "WhisperModel | None" = None
@@ -79,8 +88,8 @@ class VoiceEngine:
         self._tts_enabled     = False
         self._tts_proc = None 
         self._record_lock     = threading.Lock()
-        self.model_ready      = False
-
+        self.model_ready      = False   
+    # press F5, it's instant.
     def preload_whisper(self) -> None:
         if not WHISPER_AVAILABLE:
             return
@@ -103,7 +112,6 @@ class VoiceEngine:
             )
             self.model_ready = True
         return self._whisper
-
     def start_recording(self) -> bool:
         if not AUDIO_AVAILABLE:
             return False
@@ -157,23 +165,56 @@ class VoiceEngine:
             communicate = edge_tts.Communicate(text, self.TTS_VOICE)
             await communicate.save(tmp_path)
 
-            proc = await asyncio.create_subprocess_shell(
-                f"mpg123 -q {tmp_path} 2>/dev/null || "
-                f"ffplay -nodisp -autoexit -loglevel quiet {tmp_path} 2>/dev/null || "
-                f"aplay {tmp_path} 2>/dev/null",
+            system = platform.system()
+            if system == "Darwin":
+
+                player_cmd = ["afplay", tmp_path]
+            elif system == "Windows":
+                player_cmd = [
+                    "powershell", "-c",
+                    f"(New-Object Media.SoundPlayer '{tmp_path}').PlaySync()"
+                ]
+            else:
+                for player in ["mpg123", "ffplay", "aplay"]:
+                    if subprocess.run(
+                        ["which", player],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    ).returncode == 0:
+                        if player == "mpg123":
+                            player_cmd = ["mpg123", "-q", tmp_path]
+                        elif player == "ffplay":
+                            player_cmd = [
+                                "ffplay", "-nodisp", "-autoexit",
+                                "-loglevel", "quiet", tmp_path,
+                            ]
+                        else:
+                            player_cmd = ["aplay", tmp_path]
+                        break
+                else:
+                    player_cmd = ["aplay", tmp_path]
+
+            proc = await asyncio.create_subprocess_exec(
+                *player_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
             self._tts_proc = proc
-            await proc.wait()
-            self._tts_proc = None
-            Path(tmp_path).unlink(missing_ok=True)
+            try:
+                await proc.wait()
+            except asyncio.CancelledError:
+                proc.kill()
+                raise
+            finally:
+                self._tts_proc = None
+                Path(tmp_path).unlink(missing_ok=True)
+
         except Exception:
             pass
 
     def stop_speaking(self) -> None:
         proc = self._tts_proc
-        if proc and proc.returncode is None:
+        if proc is not None:
             try:
                 proc.kill()
             except Exception:
@@ -185,7 +226,16 @@ class VoiceEngine:
         return self._tts_enabled
 
 
+
 class LocalAgent:
+    """
+    Slash commands:
+        /shell <cmd>           – run a shell command
+        /read  <path>          – read a file from disk
+        /write <path> <text>   – write text to a file
+        /fetch <url>           – fetch a URL and return cleaned text
+    """
+
     @staticmethod
     async def run_shell(command: str) -> str:
         try:
@@ -260,8 +310,10 @@ class LocalAgent:
         system = platform.system()
         try:
             if system == "Windows":
+          
                 subprocess.Popen(f'start "" "{app_name}"', shell=True)
             elif system == "Darwin":
+  
                 subprocess.Popen(["open", "-a", app_name])
             else:
                 candidate = app_name.lower().replace(" ", "-")
@@ -281,6 +333,7 @@ class LocalAgent:
         try:
             opened = webbrowser.open(f"spotify:search:{quote(query)}")
             if not opened:
+                # Fallback: open the web player instead of failing silently.
                 webbrowser.open(f"https://open.spotify.com/search/{quote(query)}")
             return f"🎵 Opening Spotify and searching for **{query}**…"
         except Exception as e:
@@ -294,6 +347,9 @@ _AGENT_CMD_LINE_RE = re.compile(r"^\s*(/shell|/read|/write|/fetch)\s+(.+)$", re.
 
 
 def match_local_action(text: str):
+    """Return ('spotify'|'open_app', target) if the prompt is a direct local
+    command, else None. Deliberately conservative — only matches short,
+    command-shaped phrases, not general conversation."""
     text = text.strip()
     if not text or len(text.split()) > 8:
         return None
@@ -314,7 +370,17 @@ FALLBACK_MODELS = [
 ]
 
 
+
 class ApiKeyScreen(Screen):
+    """
+    Shown automatically on first launch when OPENROUTER_API_KEY is missing.
+
+    Step 1 — how/where to get a free OpenRouter API key.
+    Step 2 — paste the key; it's validated, written to .env, and loaded
+             into the current process so the app works immediately
+             without needing a restart.
+    """
+
     CSS = """
     ApiKeyScreen {
         align: center middle;
@@ -374,6 +440,7 @@ class ApiKeyScreen(Screen):
                     yield Button("Open openrouter.ai/keys", id="open-browser-btn")
                     yield Button("Next →", id="next-btn", variant="primary")
 
+            # ── Step 2: enter + save the key (hidden until Next) ────────
             with Vertical(id="step-2"):
                 yield Static("Step 2 of 2 — Enter your API key", id="step-indicator-2")
                 yield Static("Paste the key you copied from OpenRouter below.", id="step2-body")
@@ -392,7 +459,7 @@ class ApiKeyScreen(Screen):
             try:
                 webbrowser.open(OPENROUTER_KEYS_URL)
             except Exception:
-                pass
+                pass  
         elif bid == "next-btn":
             self.query_one("#step-1").display = False
             self.query_one("#step-2").display = True
@@ -425,12 +492,12 @@ class ApiKeyScreen(Screen):
         except Exception as e:
             error.update(f"❌ Could not save to .env: {e}")
             return
-
         os.environ["OPENROUTER_API_KEY"] = key
         self.app.pop_screen()
 
     @staticmethod
     def _write_env_key(key: str) -> None:
+        """Write/replace OPENROUTER_API_KEY in the project's .env file."""
         env_path = Path(root_dir) / ".env"
         lines: list[str] = []
         found = False
@@ -449,6 +516,17 @@ class ApiKeyScreen(Screen):
         env_path.write_text("\n".join(lines) + "\n")
 
 class ConfirmCommandScreen(ModalScreen[bool]):
+    """
+    Modal shown in Agent mode before any command the MODEL suggested
+    (extracted from its reply text) is actually executed. Dismisses with
+    True (run it) or False (skip it) via the buttons, or False on Escape.
+
+    Commands the user types themselves (a message starting with "/") are
+    NOT gated by this — this only covers the auto-execution path, since
+    those commands never went through explicit human intent in the first
+    place.
+    """
+
     CSS = """
     ConfirmCommandScreen {
         align: center middle;
@@ -522,6 +600,7 @@ class AITerminalApp(App):
         layout: vertical;
     }
 
+    /* ── Chat output ────────────────────────── */
     #output-container {
         height: 1fr;
         border: solid $accent;
@@ -529,6 +608,7 @@ class AITerminalApp(App):
         margin: 1 1 0 1;
     }
 
+    /* ── Voice status bar ───────────────────── */
     #voice-bar {
         height: 1;
         margin: 0 1;
@@ -543,6 +623,7 @@ class AITerminalApp(App):
         color: $success;
     }
 
+    /* ── Rich input panel ───────────────────── */
     #input-panel {
         height: auto;
         max-height: 14;
@@ -577,6 +658,7 @@ class AITerminalApp(App):
         padding: 0 1 1 1;
     }
 
+    /* ── Bottom bar ─────────────────────────── */
     #input-area {
         height: auto;
         margin: 0 1 1 1;
@@ -617,7 +699,7 @@ class AITerminalApp(App):
     agent_mode: reactive[bool] = reactive(False)
     panel_open: reactive[bool] = reactive(False)
     is_recording: reactive[bool] = reactive(False)
-    is_speaking:  reactive[bool] = reactive(False)
+    is_speaking:  reactive[bool] = reactive(False)   
     tts_on: reactive[bool] = reactive(False)
 
     def __init__(self, **kwargs):
@@ -632,6 +714,7 @@ class AITerminalApp(App):
         self.agent        = LocalAgent()
         self.voice        = VoiceEngine()
         self._models: list = FALLBACK_MODELS
+
         self.visible_transcript: list[str] = []
 
     def compose(self) -> ComposeResult:
@@ -657,6 +740,7 @@ class AITerminalApp(App):
             id="output-container",
         )
 
+        # Voice status bar
         yield Static(
             "🎙 F5=Record  🔊 F6=TTS off  🤖 F7=Agent off  "
             + ("| Whisper ✓" if WHISPER_AVAILABLE else "| Whisper ✗ (pip install faster-whisper)")
@@ -687,10 +771,11 @@ class AITerminalApp(App):
                 id="panel-hint",
             )
 
+
         yield Container(
             Horizontal(
                 Select(
-                    FALLBACK_MODELS,
+                    FALLBACK_MODELS, 
                     prompt="⏳ Loading models…",
                     id="model-selector",
                 ),
@@ -723,10 +808,11 @@ class AITerminalApp(App):
         try:
             self.voice.preload_whisper()
         except Exception:
-            pass
+            pass   # Non-fatal — falls back to lazy-load on first use
 
     @work
     async def load_models_async(self) -> None:
+        """Fetch the live free-model list without blocking the UI."""
         selector = self.query_one("#model-selector", Select)
         status   = self.query_one("#status-label",   Static)
 
@@ -734,6 +820,7 @@ class AITerminalApp(App):
             try:
                 models = await aget_available_models()
                 self._models = models
+                # Rebuild the Select widget with real model list
                 selector.set_options(models)
                 if models:
                     selector.value = models[0][1]
@@ -747,6 +834,7 @@ class AITerminalApp(App):
             selector.set_options(FALLBACK_MODELS)
             selector.value = FALLBACK_MODELS[0][1]
 
+        # Update welcome text now that models are loaded
         self.query_one("#ai-response", Markdown).update(
             "### 🤖 AI Terminal  v2.1  — Ready\n\n"
             "| Key | Action |\n"
@@ -839,12 +927,12 @@ class AITerminalApp(App):
             status.update("❌ Transcription timed out (> 25s) — try a shorter clip.")
         except Exception as e:
             status.update(f"❌ Transcription error: {e}")
-            
     def action_stop_tts(self) -> None:
         self.voice.stop_speaking()
         self.is_speaking = False
         self._update_voice_bar()
         self.query_one("#status-label", Static).update("🛑 TTS stopped.")
+
 
     def action_toggle_tts(self) -> None:
         if not TTS_AVAILABLE:
@@ -872,6 +960,7 @@ class AITerminalApp(App):
         )
 
     def _render_transcript(self) -> None:
+        """Render the full accumulated conversation, not just the latest turn."""
         markdown = self.query_one("#ai-response", Markdown)
         if not self.visible_transcript:
             markdown.update(
@@ -882,6 +971,7 @@ class AITerminalApp(App):
         markdown.update("\n\n---\n\n".join(self.visible_transcript))
 
     def _append_turn(self, block: str) -> None:
+        """Add one turn to the visible transcript and re-render."""
         self.visible_transcript.append(block)
         self._render_transcript()
 
@@ -891,7 +981,7 @@ class AITerminalApp(App):
             return
         self.query_one("#prompt-input", Input).value = ""
         await self._submit_prompt(user_prompt)
-
+    # user needing to press Enter afterward.
     async def _submit_prompt(self, user_prompt: str) -> None:
         model_selector = self.query_one("#model-selector", Select)
         selected_model = model_selector.value
@@ -903,6 +993,7 @@ class AITerminalApp(App):
             self.run_local_action(user_prompt, local_action)
             return
 
+        # Slash command → agent tool
         if user_prompt.startswith("/"):
             self.run_agent_command(user_prompt)
             return
@@ -916,7 +1007,6 @@ class AITerminalApp(App):
         )
 
         self.run_llm_query(full_prompt, user_prompt, str(selected_model))
-
     async def _build_prompt(self, user_prompt: str) -> str:
         if not self.panel_open:
             return user_prompt
@@ -952,7 +1042,6 @@ class AITerminalApp(App):
             return f"{user_prompt}\n\n---\n**Document:**\n{panel_text}"
 
         return f"{user_prompt}\n\n---\n{panel_text}"
-
     @work(exclusive=False)
     async def run_local_action(self, display_prompt: str, action) -> None:
         kind, target = action
@@ -1058,6 +1147,7 @@ class AITerminalApp(App):
             if self.agent_mode:
                 self.auto_execute_suggested_commands(reply_text)
 
+            # TTS: speak the response if enabled
             if self.tts_on:
                 import re
                 plain = re.sub(r"[`#*_\[\]()]", "", reply_text)
