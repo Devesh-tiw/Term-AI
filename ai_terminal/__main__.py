@@ -686,6 +686,18 @@ class AITerminalApp(App):
     #prompt-input {
         border: tall $primary;
     }
+    #attachment-row {
+        height: 3;
+        margin: 0 0 1 0;
+    }
+    #add-attachment-btn {
+        width: auto;
+    }
+    #attachment-status {
+        width: 1fr;
+        padding: 1 0 0 1;
+        color: $text-muted;
+    }
     """
 
     CONTENT_TYPES = [
@@ -760,6 +772,9 @@ class AITerminalApp(App):
                 ),
                 id="panel-type-row",
             )
+            with Horizontal(id="attachment-row"):
+                yield Button("📎 Add files / images", id="add-attachment-btn", variant="primary")
+                yield Static("No file selected", id="attachment-status")
             yield TextArea(
                 "",
                 id="paste-area",
@@ -767,7 +782,7 @@ class AITerminalApp(App):
                 show_line_numbers=False,
             )
             yield Static(
-                "Paste code, text, image path, or file path — injected automatically on Enter.",
+                "Click Add files / images to browse, or paste text below — injected automatically on Enter.",
                 id="panel-hint",
             )
 
@@ -849,6 +864,64 @@ class AITerminalApp(App):
             "| `/write <path> <text>` | Write to file |\n"
             "| `/fetch <url>` | Fetch web page |"
         )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Open the operating system's file explorer from the attachment button."""
+        if event.button.id == "add-attachment-btn":
+            self.choose_attachments()
+
+    @work(exclusive=True)
+    async def choose_attachments(self) -> None:
+        """Show the native file picker without blocking the Textual interface."""
+        status = self.query_one("#status-label", Static)
+        status.update("📂 Opening file picker…")
+        try:
+            paths = await asyncio.to_thread(self._show_native_file_picker)
+        except Exception as exc:
+            status.update(f"❌ Could not open file picker: {exc}")
+            return
+
+        if not paths:
+            status.update("No file selected.")
+            return
+
+        area = self.query_one("#paste-area", TextArea)
+        selector = self.query_one("#content-type-selector", Select)
+        attachment_status = self.query_one("#attachment-status", Static)
+        area.text = "\n".join(paths)
+
+        # Make the common image-only case effortless; files are otherwise read as text.
+        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+        selector.value = "image" if all(Path(path).suffix.lower() in image_extensions for path in paths) else "filepath"
+        names = ", ".join(Path(path).name for path in paths[:2])
+        extra = f" +{len(paths) - 2} more" if len(paths) > 2 else ""
+        attachment_status.update(f"✅ {names}{extra}")
+        self.panel_open = True
+        self.query_one("#input-panel").display = True
+        status.update(f"📎 Attached {len(paths)} file(s). Add your question and press Enter.")
+
+    @staticmethod
+    def _show_native_file_picker() -> tuple[str, ...]:
+        """Use the OS file-explorer dialog (Windows/macOS/Linux desktop)."""
+        # tkinter is part of standard CPython and needs no new package.
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        try:
+            selected = filedialog.askopenfilenames(
+                title="Select files or images to attach",
+                filetypes=[
+                    ("Supported files", "*.png *.jpg *.jpeg *.gif *.webp *.bmp *.txt *.md *.py *.js *.json *.csv *.pdf *.docx"),
+                    ("Images", "*.png *.jpg *.jpeg *.gif *.webp *.bmp"),
+                    ("All files", "*.*"),
+                ],
+            )
+            return tuple(str(Path(path)) for path in selected)
+        finally:
+            root.destroy()
 
     def action_toggle_panel(self) -> None:
         panel = self.query_one("#input-panel")
@@ -1018,21 +1091,23 @@ class AITerminalApp(App):
             return user_prompt
 
         if content_type == "filepath":
-            file_result = await self.agent.read_file(panel_text)
-            return f"{user_prompt}\n\n---\n{file_result}"
+            paths = [line.strip() for line in panel_text.splitlines() if line.strip()]
+            results = [await self.agent.read_file(path) for path in paths]
+            return f"{user_prompt}\n\n---\n" + "\n\n---\n\n".join(results)
 
         if content_type == "image":
-            p = Path(panel_text).expanduser()
-            if p.exists():
-                try:
-                    b64 = base64.b64encode(p.read_bytes()).decode()
-                    return (
-                        f"{user_prompt}\n\n"
-                        f"[Image: `{p.name}` base64 len={len(b64)}. Analyse as requested.]"
-                    )
-                except Exception:
-                    pass
-            return f"{user_prompt}\n\n[Image path: `{panel_text}` — not readable]"
+            paths = [Path(line.strip()).expanduser() for line in panel_text.splitlines() if line.strip()]
+            image_notes = []
+            for p in paths:
+                if p.exists():
+                    try:
+                        b64 = base64.b64encode(p.read_bytes()).decode()
+                        image_notes.append(f"[Image: `{p.name}` base64 len={len(b64)}. Analyse as requested.]")
+                    except Exception:
+                        image_notes.append(f"[Image path: `{p}` — not readable]")
+                else:
+                    image_notes.append(f"[Image path: `{p}` — not found]")
+            return f"{user_prompt}\n\n" + "\n".join(image_notes)
 
         if content_type == "code":
             lang = Path(panel_text.splitlines()[0]).suffix.lstrip(".") if panel_text else ""
