@@ -9,7 +9,6 @@ import platform
 import subprocess
 from pathlib import Path
 from urllib.parse import quote
-
 from dotenv import load_dotenv
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
