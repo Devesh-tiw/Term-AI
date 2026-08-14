@@ -668,7 +668,7 @@ class AITerminalApp(App):
         margin-bottom: 1;
     }
     #model-selector {
-        width: 55%;
+        width: 45%;
     }
     #agent-toggle-label {
         width: auto;
@@ -773,7 +773,6 @@ class AITerminalApp(App):
                 id="panel-type-row",
             )
             with Horizontal(id="attachment-row"):
-                yield Button("📎 Add files / images", id="add-attachment-btn", variant="primary")
                 yield Static("No file selected", id="attachment-status")
             yield TextArea(
                 "",
@@ -796,6 +795,7 @@ class AITerminalApp(App):
                 ),
                 Static("Agent:", id="agent-toggle-label"),
                 Switch(value=False, id="agent-toggle"),
+                Button("📎 Attach", id="add-attachment-btn", variant="primary"),
                 Static("Ready.", id="status-label"),
                 id="controls-row",
             ),
